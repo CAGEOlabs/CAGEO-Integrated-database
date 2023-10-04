@@ -33,8 +33,11 @@ class dataprocess:
                 df_record_sub = df_record[df_record['measurement_id'].isin(meta_data['Record_Id'])]
 
                                         
+                                        
             record_id_list_sub = df_record_sub['measurement_id'].tolist()
             record_id_strings_sub = [str(record_id) for record_id in record_id_list_sub] 
+            sample_id_sub = df_record_sub['sample_id'].tolist()
+            sample_id_strings_sub = [str(sample_id) for sample_id in sample_id_sub]
 
             for i in range(len(record_id_strings_sub)):
                 os.chdir(str(record_id_strings_sub[i]))   #### changing directory iteratively##########
@@ -46,7 +49,7 @@ class dataprocess:
                 d1 = d1.astype('float32')
                 d1 = np.reshape(d1, (a1-2,1))
                 w1 = np.ma.masked_outside(d1,np.mean(d1)+(2*np.std(d1)),np.mean(d1)-(2*np.std(d1)))
-                dic_result['sample id'].append(str(df_record_sub['sample_id'][i])),dic_result['mean'].append(np.mean(w1)),dic_result['std'].append(np.std(w1)),dic_result['median'].append(np.median(w1)),dic_result['max'].append(np.max(w1)),dic_result['min'].append(np.min(w1))
+                dic_result['sample id'].append(sample_id_strings_sub[i]),dic_result['mean'].append(np.mean(w1)),dic_result['std'].append(np.std(w1)),dic_result['median'].append(np.median(w1)),dic_result['max'].append(np.max(w1)),dic_result['min'].append(np.min(w1))
                 os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir))
                 # print(os.getcwd())
             os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir+os.sep + os.pardir))
@@ -189,6 +192,21 @@ class dataprocess:
 
         return df_final,df_cal
     
+    def convert_csv_to_utf8(self, input_file):
+        with open(input_file, 'rb') as f:
+            enc = chardet.detect(f.read())
+
+        if enc['encoding'].lower() == 'utf-8':
+            print(f"The file {input_file} is already in UTF-8 encoding.")
+        else:
+            # Use a temporary DataFrame to read the CSV with the detected encoding
+            df = pd.read_csv(input_file, encoding=enc['encoding'])
+            
+            # Save the DataFrame with UTF-8 encoding
+            output_file = input_file.replace('.csv', '_utf8.csv')
+            df.to_csv(output_file, encoding='utf-8', sep=',',index=False)
+            print(f"File converted and saved as {output_file}")
+    
     def vel(self,prop):
 
         data_inventory = pd.read_excel(self.path_to_report, sheet_name = None)
@@ -202,13 +220,30 @@ class dataprocess:
         for dir in os.listdir():
             os.chdir(dir)
 
-            with open(f'Punditlink Data.csv', 'rb') as f:
-                enc = chardet.detect(f.read())
+            self.convert_csv_to_utf8('Punditlink Data.csv')
 
-            df_data = pd.read_csv(f'Punditlink Data.csv',sep=',', encoding = enc['encoding'],header = 14)
-            a=[]
-            for i in range(1,len(df_data),25):
-                a.append(i)
+            file = glob.glob('*.csv')
+
+            rawdata = open(file[len(file)-1], 'rb').read()
+            enc = chardet.detect(rawdata)
+            # df = pd.read_csv(list1[0],sep='	', encoding = enc['encoding'],header = 14)
+
+            try:
+                df_data = pd.read_csv(file[len(file)-1],sep=',', encoding = enc['encoding'],header = 14)
+                df_data.columns = df_data.columns.str.strip()
+                record_id = df_data['ID']
+                a=[]
+                for i in range(1,len(df_data),25):
+                    a.append(i)
+
+            except KeyError:
+                df_data = pd.read_csv(file[len(file)-1],sep='\t', encoding = enc['encoding'],header = 10)
+                df_data.columns = df_data.columns.str.strip()
+                record_id = df_data['ID']
+                a=[]
+                for i in range(1,len(df_data),16):
+                    a.append(i)
+    
             df_vel = df_data.iloc[a]
             df_proc = pd.concat([df_proc, df_vel], ignore_index=True)
             os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir))
@@ -228,10 +263,18 @@ class dataprocess:
     
         result_df.iloc[:,0] = (sample_id).astype(str)
         result_df.rename(columns={'ID': 'sample id'}, inplace=True)
-        df_final = result_df
+        cal = result_df['sample id'].str.contains('cal')
+        df_cal = result_df[cal]
+        df_final = result_df[np.logical_not(cal)]
         df_final.index = range(len(df_final))
 
         return df_final
+    
+
+    def extract_last_four_digits(self,number):
+        return float(number[-4:])
+
+
     
     def xrf(self):
         
@@ -244,10 +287,16 @@ class dataprocess:
             os.chdir(dir)
             file = glob.glob('*.csv')
             try:
-                df_xrf = pd.read_csv(file[len(file)-1],sep=',')
+                df_xrf = pd.read_csv(file[len(file)-1],skiprows=1)
+                info = df_xrf['info']
+            except KeyError:
+                df_xrf = pd.read_csv(file[len(file)-1])
                 info = df_xrf['info']
             except KeyError:
                 df_xrf = pd.read_csv(file[len(file)-1],sep=';')
+                info = df_xrf['info']
+            except KeyError:
+                df_xrf = pd.read_csv(file[len(file)-1],sep=',')
                 info = df_xrf['info']
                
                 
@@ -291,13 +340,16 @@ class dataprocess:
         new_df = new_df.drop(new_df2,axis=1)
         new_df = new_df.replace('<LOD','0.0')
         new_df = new_df.replace('na',np.NaN)
+        new_df = new_df.replace('de',np.NaN)
 
-        new_df = new_df.apply(np.float64)
-        new_df1 = new_df.groupby(['info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].mean().reset_index()
-        new_df2 = new_df.groupby(['info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].std().reset_index()
-        new_df3 = new_df.groupby(['info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].median().reset_index()
-        new_df4 = new_df.groupby(['info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].max().reset_index()
-        new_df5 = new_df.groupby(['info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].min().reset_index()
+        new_df = pd.concat([new_df.iloc[:, :-1].apply(np.float64),new_df['info']],axis=1)
+        new_df['temp_info'] = new_df['info'].apply(self.extract_last_four_digits)
+
+        new_df1 = new_df.groupby(['temp_info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].mean().reset_index()
+        new_df2 = new_df.groupby(['temp_info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].std().reset_index()
+        new_df3 = new_df.groupby(['temp_info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].median().reset_index()
+        new_df4 = new_df.groupby(['temp_info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].max().reset_index()
+        new_df5 = new_df.groupby(['temp_info'])[['Mg Concentration','Al Concentration','Si Concentration','P Concentration','S Concentration','K Concentration','Ca Concentration','Ti Concentration','V Concentration','Cr Concentration','Mn Concentration','Fe Concentration','Mg Concentration','Co Concentration','Ni Concentration','Cu Concentration','Zn Concentration','As Concentration','Se Concentration','Rb Concentration','Sr Concentration','Y Concentration','Zr Concentration','Nb Concentration','Mo Concentration','Ag Concentration','Cd Concentration','Sn Concentration','Sb Concentration','W Concentration','Au Concentration','Hg Concentration','Pb Concentration','Bi Concentration','Th Concentration','U Concentration','LE Concentration']].min().reset_index()
         new_df1.columns = new_df1.columns.str.replace('Concentration', 'Mean')
         # new_df1.columns = new_df1.replace('Concentration', 'Mean')
         new_df2.columns = new_df2.columns.str.replace('Concentration', 'Std')
@@ -306,15 +358,17 @@ class dataprocess:
         new_df5.columns = new_df5.columns.str.replace('Concentration', 'Min')
         new_df6 = pd.concat([new_df1,new_df2,new_df3,new_df4,new_df5],axis=1)
         new_df7 = new_df6.sort_index(axis=1)
-        new_df7 = new_df7.iloc[:, :-4]
+        new_df7 = new_df7.loc[:, ~new_df7.columns.duplicated()]
+        new_df7 = new_df7.iloc[:, :-1]
+        new_df7['info']=np.unique(sampleid_list)
         df_final = new_df7 
-        df_final = df_final.loc[:, ~df_final.columns.duplicated()]
+        
         df_final.rename(columns={'info': 'sample id'}, inplace=True)
 
         os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir+ os.sep + os.pardir))
 
         return df_final
     
-    
+   
     
         
