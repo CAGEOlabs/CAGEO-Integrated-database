@@ -4,7 +4,7 @@ import glob
 import os
 import chardet
 from datetime import datetime
-
+import re
 
 class dataprocess:
     
@@ -207,92 +207,101 @@ class dataprocess:
     def density(self):
     
         data_inventory = pd.read_excel(self.path_to_report, sheet_name = None)
+        df_report = data_inventory.get('sample_report') 
+        sample_id_report = df_report['sample_id']
+
         df_den = data_inventory.get('den') 
         df_out = pd.concat([df_den['sample_id'],df_den['density']],axis=1)
+
         df_out.rename(columns={'sample_id': 'sample id'}, inplace=True)
 
-        return df_out
-    
-    def ip_res(self):
+        df_out.iloc[:,0] = (sample_id_report).astype(str)
 
-        data_inventory = pd.read_excel(self.path_to_report, sheet_name = None)
-
-        df_record = data_inventory.get('ip_res')
-        sample_id = df_record['sample_id']
-        df_record_nan_rem = df_record[~df_record['measurement_id'].isna()]
-
-        os.chdir(f'{self.drillhole}/ip_res')
-
-        df_proc = pd.DataFrame()
-        
-        date_objects = [datetime.strptime(date_str, "%d-%m-%y") for date_str in os.listdir()]
-
-        # Sort the list based on datetime objects
-        sorted_folder_names = [date.strftime("%d-%m-%y") for date in sorted(date_objects)]
-        
-        for dir in sorted_folder_names:
-
-            os.chdir(dir+'/'+'kt20_0385'+'/'+'ip')
-            ip_record = pd.read_csv('ip_records.csv')
-            for i in df_record_nan_rem['measurement_id']:
-                df_proc_temp = ip_record[ip_record.Record_Id==i]
-                df_proc = pd.concat([df_proc, df_proc_temp], ignore_index=True)
-
-            os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir+os.sep + os.pardir+os.sep + os.pardir))
-
-        os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir + os.sep + os.pardir))
-
-
-        # display(df_proc)
-
-        nan_indices = df_record[df_record['measurement_id'].isna()].index
-
-        dic_nan = {str(i) : ['nan'] for i in df_proc.columns}
-        df_nan = pd.DataFrame(dic_nan)
-
-        
-        for index in nan_indices:
-            df_proc = pd.concat([df_proc.iloc[:index], df_nan, df_proc.iloc[index:]]).reset_index(drop=True)
-        result_df = df_proc.reset_index(drop=True)
-
-        result_df[result_df['Record_Id']=='nan']=-1
-        proc_meas_id_with_nan = result_df['Record_Id'].to_list()
-        df_record[df_record['measurement_id'].isna()]=-1 
-        df_rec_meas_id = df_record['measurement_id'].to_list()
-        ind_bool_err = []
-        for i in df_rec_meas_id:       # df_test has to be the df_record
-            ind_bool_err.append(i not in proc_meas_id_with_nan)
-        ind_err=[]
-        for i in range(len(ind_bool_err)):
-            if ind_bool_err[i]==True:
-                ind_err.append(i)
-        df_processed_data_with_nan_rem = result_df[result_df['Record_Id']!=-1]
-
-        a = result_df['Record_Id']==-1
-        nan_ind=[]
-        for i in range(len(a)):
-            if a[i]==True:
-                nan_ind.append(i)
-
-        nan_ind.extend(ind_err)
-        nan_ind.sort()
-
-        dic_nan = {str(i) : ['nan'] for i in df_processed_data_with_nan_rem.columns}
-        df_nan = pd.DataFrame(dic_nan) 
-        for index in nan_ind:
-            df_processed_data_with_nan_rem = pd.concat([df_processed_data_with_nan_rem.iloc[:index], df_nan,df_processed_data_with_nan_rem.iloc[index:]]).reset_index(drop=True)
-        result_df = df_processed_data_with_nan_rem.reset_index(drop=True)
-
-        result_df.iloc[ind_err,:] = 'error'
-
-        result_df.iloc[:,0] = (sample_id).astype(str)
-        result_df.rename(columns={'Record_Id': 'sample id'}, inplace=True)
-        cal = result_df['sample id'].str.contains('cal')
-        df_cal = result_df[cal]
-        df_final = result_df[np.logical_not(cal)]
+        cal = df_out['sample id'].str.contains('cal')
+        df_cal = df_out[cal]
+        df_final = df_out[np.logical_not(cal)]
         df_final.index = range(len(df_final))
+        df_final = self.find_missing_list_indices(df_final,'sample id',sample_id_report)
 
         return df_final,df_cal
+    
+    
+    def ip_res (self):
+
+            data_inventory = pd.read_excel(self.path_to_report, sheet_name = None)
+            df_record = data_inventory.get('ip_res')
+            sample_id = df_record['sample_id']
+            df_record_nan_rem = df_record[~df_record['measurement_id'].isna()]
+
+            os.chdir(f'{self.drillhole}/ip_res')
+
+            df_proc = pd.DataFrame()
+
+            date_objects = [datetime.strptime(date_str, "%d-%m-%y") for date_str in os.listdir()]
+
+            # Sort the list based on datetime objects
+            sorted_folder_names = [date.strftime("%d-%m-%y") for date in sorted(date_objects)]
+
+            for i in df_record_nan_rem['measurement_id']:
+
+                    for dir in sorted_folder_names:
+
+                        os.chdir(dir+'/'+'kt20_0385'+'/'+'ip')
+                        ip_record = pd.read_csv('ip_records.csv')         
+                        df_proc_temp = ip_record[ip_record.Record_Id==i]
+                        df_proc = pd.concat([df_proc, df_proc_temp], ignore_index=True)
+                        os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir+os.sep + os.pardir+os.sep + os.pardir))
+
+            os.chdir(os.path.normpath(os.getcwd() + os.sep + os.pardir + os.sep + os.pardir))
+
+            nan_indices = df_record[df_record['measurement_id'].isna()].index
+
+            dic_nan = {str(i) : ['nan'] for i in df_proc.columns}
+            df_nan = pd.DataFrame(dic_nan)
+
+            
+            for index in nan_indices:
+                df_proc = pd.concat([df_proc.iloc[:index], df_nan, df_proc.iloc[index:]]).reset_index(drop=True)
+            result_df = df_proc.reset_index(drop=True)
+
+            result_df[result_df['Record_Id']=='nan']=-1
+            proc_meas_id_with_nan = result_df['Record_Id'].to_list()
+            df_record[df_record['measurement_id'].isna()]=-1 
+            df_rec_meas_id = df_record['measurement_id'].to_list()
+            ind_bool_err = []
+            for i in df_rec_meas_id:       # df_test has to be the df_record
+                ind_bool_err.append(i not in proc_meas_id_with_nan)
+            ind_err=[]
+            for i in range(len(ind_bool_err)):
+                if ind_bool_err[i]==True:
+                    ind_err.append(i)
+            df_processed_data_with_nan_rem = result_df[result_df['Record_Id']!=-1]
+
+            a = result_df['Record_Id']==-1
+            nan_ind=[]
+            for i in range(len(a)):
+                if a[i]==True:
+                    nan_ind.append(i)
+
+            nan_ind.extend(ind_err)
+            nan_ind.sort()
+
+            dic_nan = {str(i) : ['nan'] for i in df_processed_data_with_nan_rem.columns}
+            df_nan = pd.DataFrame(dic_nan) 
+            for index in nan_ind:
+                df_processed_data_with_nan_rem = pd.concat([df_processed_data_with_nan_rem.iloc[:index], df_nan,df_processed_data_with_nan_rem.iloc[index:]]).reset_index(drop=True)
+            result_df = df_processed_data_with_nan_rem.reset_index(drop=True)
+
+            result_df.iloc[ind_err,:] = 'error'
+
+            result_df.iloc[:,0] = (sample_id).astype(str)
+            result_df.rename(columns={'Record_Id': 'sample id'}, inplace=True)
+            cal = result_df['sample id'].str.contains('cal')
+            df_cal = result_df[cal]
+            df_final = result_df[np.logical_not(cal)]
+            df_final.index = range(len(df_final))
+
+            return df_final,df_cal
     
         
     def convert_csv_to_utf8(self, input_file):
@@ -431,6 +440,13 @@ class dataprocess:
         result_df.iloc[:,0] = (sample_id).astype(str)
         result_df.index = range(len(result_df))
 
+        cal = result_df['sample id'].str.contains('cal')
+        df_cal = result_df[cal]
+        df_final = result_df[np.logical_not(cal)]
+        df_final.index = range(len(df_final))
+
+        return df_final,df_cal
+
         return result_df
     
 
@@ -493,12 +509,30 @@ class dataprocess:
             if isinstance(info[i], str) and info[i].startswith('blk'):
                 drop_list.append(i)
             i += 1
-        # print(drop_list)
-        new_df = df_proc.drop(df_proc.index[drop_list])
+        j = 0
+    ###########
+        cal_list = []
+        for temp_cal in cal_list:
+            calid = str(cal_list)[:-1]
+            cal_list.append(calid)
+        cal_list = [x for x,y in enumerate(info) if "s" in str(y)]
 
+        # cal_list = pd.DataFrame(cal_list)
+    ###########
+        
+        new_df = df_proc.drop(df_proc.index[drop_list])
+        new_cal =df_proc.iloc[cal_list]
         # display(new_df)
 
         new_df.reset_index(inplace = True)
+        new_cal.reset_index(inplace = True)
+        new_cal_sample = [i for i in range(new_cal.shape[0])]
+        new_cal_sample = np.reshape(new_cal_sample,(new_cal.shape[0],1))
+        new_cal['info'] = new_cal_sample
+        new_cal['info'] = 'cal_0'+new_cal['info'].astype('str')
+        new_cal = new_cal[['info','As Concentration','As Error1s']]
+        new_cal = new_cal.rename(columns={'info':'sample id'})
+        new_cal = pd.DataFrame(new_cal)
         new_df = new_df.drop(new_df[new_df['info'] == 'del'].index)
         new_info = new_df['info'].tolist()
         sampleid_list = []
@@ -582,7 +616,7 @@ class dataprocess:
 
         result_df.iloc[nan_ind,:] = 'nan'
 
-        return result_df
+        return result_df,new_cal
 
 
    
