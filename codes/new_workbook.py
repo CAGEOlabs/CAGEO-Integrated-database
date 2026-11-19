@@ -31,10 +31,15 @@ class database(dataprocess):
         workbook.save(self.path_to_database)
 
     def add_sheets(self, property_list):
-        """Add one empty sheet per property name in `property_list`."""
+        """Add one empty sheet per property name in `property_list`, then drop
+        the empty default 'Sheet' that openpyxl creates with a new workbook."""
         workbook = load_workbook(self.path_to_database)
         for prop in property_list:
             workbook.create_sheet(prop)
+        # openpyxl can't save a workbook with zero sheets, so only remove the
+        # default sheet once at least one property sheet exists.
+        if 'Sheet' in workbook.sheetnames and len(workbook.sheetnames) > 1:
+            del workbook['Sheet']
         workbook.save(self.path_to_database)
 
     def copy_sheet_columns(self, property_sheet, sample_report):
@@ -106,6 +111,17 @@ class database(dataprocess):
     # -- write processed data into the database ---------------------------
 
     def add_data(self, prop):
+        if prop == 'gamma':
+            # Gamma is a straight copy of gamma_concentrations*.csv -- no
+            # alignment to sample_report, so it bypasses the checks below.
+            df_gamma, _ = self.gamma()
+            if df_gamma is None:
+                return   # no gamma_concentrations CSV: sheet keeps the sample_report copy
+            with pd.ExcelWriter(self.path_to_database, mode='a', engine='openpyxl',
+                                if_sheet_exists='replace') as writer:
+                df_gamma.to_excel(writer, sheet_name='gamma', index=False)
+            return
+
         df_proc, df_cal = self.select_and_process(prop)
 
         int_data = pd.read_excel(self.path_to_database, sheet_name=None)

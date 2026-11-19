@@ -2,7 +2,9 @@
 Drillhole geophysical/geochemical measurement processing.
 
 
-NOTE ON `gamma`: the code needs modifications in the future based on the equipment troubleshoot.
+NOTE ON `gamma`: gamma is no longer processed from the raw GT-40 assay
+exports. A pre-computed `gamma_concentrations*.csv` in `<drillhole>/gamma/`
+is copied as-is into the 'gamma' sheet of the integrated database.
 """
 
 import os
@@ -56,11 +58,9 @@ VEL_READ_CONFIGS = [
     {'sep': ';', 'header': 14, 'stride': 25},
 ]
 
-GAMMA_STAT_COLS = [
-    'K_mean', 'K_median', 'K_max', 'K_min', 'K_std',
-    'U_mean', 'U_median', 'U_max', 'U_min', 'U_std',
-    'Th_mean', 'Th_median', 'Th_max', 'Th_min', 'Th_std',
-]
+# File name pattern of the pre-computed gamma table, looked for directly
+# inside <drillhole>/gamma/ (not inside the date subfolders).
+GAMMA_CSV_PATTERN = 'gamma_concentrations*.csv'
 
 
 # ---------------------------------------------------------------------------
@@ -339,58 +339,37 @@ def _load_xrf_records(xrf_dir):
 # gamma helpers
 # ---------------------------------------------------------------------------
 
-def _read_gamma_assay_csv(csv_path):
-    """Read a gamma assay CSV, trying semicolon then comma delimiter
-    (matches the original's try order)."""
-    for sep in (';', ','):
+def _find_gamma_concentrations_csv(gamma_dir):
+    """
+    Return the path of the gamma_concentrations CSV directly inside
+    `gamma_dir`, or None if there is none. If several match, the first in
+    alphabetical order is used and a warning is printed.
+    """
+    if not gamma_dir.is_dir():
+        return None
+    matches = sorted(gamma_dir.glob(GAMMA_CSV_PATTERN))
+    if not matches:
+        return None
+    if len(matches) > 1:
+        print(f"Warning: several gamma_concentrations CSVs in {gamma_dir}: "
+              f"{[m.name for m in matches]} -- using {matches[0].name}")
+    return matches[0]
+
+
+def _read_gamma_concentrations_csv(csv_path):
+    """
+    Read the gamma_concentrations CSV exactly as it is. The delimiter
+    (',', ';', tab, ...) is auto-detected; a UTF-8 BOM is handled, with a
+    latin-1 fallback for non-UTF-8 files.
+    """
+    for encoding in ('utf-8-sig', 'latin-1'):
         try:
-            assay = pd.read_csv(csv_path, sep=sep)
-            assay.columns = assay.columns.str.strip()
-            if 'Id' in assay.columns:
-                return assay[assay['Id'].notna()]
-        except (KeyError, pd.errors.ParserError):
+            df = pd.read_csv(csv_path, sep=None, engine='python', encoding=encoding)
+            df.columns = df.columns.astype(str).str.strip()
+            return df
+        except UnicodeDecodeError:
             continue
-    print(f"Warning: cannot read {csv_path} with ';' or ',' delimiter")
-    return None
-
-
-def _load_gamma_assays(gamma_dir):
-    """
-    Read every assay CSV across all date folders exactly once, concatenating
-    into a single Id -> assay-row lookup table.
-
-    NOTE: the original processed each date folder's assay file independently
-    and matched df_record against it per-folder. If a single sample's three
-    replicate measurement_ids were split across two different dates, the
-    original would produce two partial (and incorrectly separate) result
-    rows for that one sample. Building one combined table across all folders
-    first, as done here, avoids that -- consistent with the fix applied to
-    ip_res/vel/xrf -- but changes behavior if that split-across-folders case
-    actually occurs in your data. Verify against real folders before relying
-    on this.
-    """
-    all_assays = []
-    for folder_name in _sorted_date_folders(gamma_dir):
-        assay_dir = gamma_dir / folder_name / 'gt40_0154' / 'assay'
-        csv_files = glob.glob(str(assay_dir / '*.csv'))
-        if not csv_files:
-            print(f"Warning: no assay CSV in {assay_dir}")
-            continue
-        df_assay = _read_gamma_assay_csv(csv_files[0])
-        if df_assay is not None:
-            all_assays.append(df_assay)
-
-    if not all_assays:
-        return pd.DataFrame(columns=['Id'])
-
-    combined = pd.concat(all_assays, ignore_index=True)
-    dup_mask = combined['Id'].duplicated()
-    if dup_mask.any():
-        dupes = combined.loc[dup_mask, 'Id'].unique().tolist()
-        print(f"Warning: duplicate assay Id(s) across folders: {dupes}")
-        combined = combined[~dup_mask]
-
-    return combined
+    raise ValueError(f"Could not read {csv_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +418,10 @@ class dataprocess:
 
         df_record = df_record.reset_index(drop=True)
 
-        results = []
+        # A measurement ID can occur in more than one date folder. Keep the
+        # first usable result in chronological order for each report row.
+        results = {}
+        result_sources = {}
         stat_cols = ['mean', 'std', 'median', 'max', 'min']
 
         for folder_name in _sorted_date_folders(cond_sus_dir):
@@ -462,9 +444,18 @@ class dataprocess:
                 if stats is None:
                     continue
 
-                results.append({'orig_index': orig_idx, **stats})
+                if orig_idx in results:
+                    print(
+                        f"Warning: {prop} measurement {row['measurement_id']} for "
+                        f"sample {row['sample_id']} occurs in both "
+                        f"{result_sources[orig_idx]} and {csv_files[0]}; "
+                        "using the first usable result."
+                    )
+                    continue
+                results[orig_idx] = stats
+                result_sources[orig_idx] = csv_files[0]
 
-        df_proc = pd.DataFrame(results).set_index('orig_index') if results else pd.DataFrame(columns=stat_cols)
+        df_proc = pd.DataFrame.from_dict(results, orient='index', columns=stat_cols)
         df_proc = df_proc.reindex(df_record.index)
 
         # sample id is always filled, whether or not a measurement was found --
@@ -714,73 +705,26 @@ class dataprocess:
 
     def gamma(self):
         """
-        Process gamma (K/U/Th) assay data.
+        Load the pre-computed gamma table from
+        `<drillhole>/gamma/gamma_concentrations*.csv`.
 
+        Returns
+        -------
+        (df_gamma, df_cal)
+            df_gamma : the CSV contents unchanged, or None if no such file
+                       exists in the gamma folder.
+            df_cal   : always an empty frame with a 'sample id' column --
+                       gamma contributes nothing to the 'cal' sheet.
         """
         gamma_dir = Path(self.drillhole) / 'gamma'
+        df_cal = pd.DataFrame(columns=['sample id'])
 
-        data_inventory = self._load_inventory()
-        df_record = data_inventory.get('gamma')
-        if df_record is None:
-            raise ValueError(f"Sheet 'gamma' not found in {self.path_to_report}")
-        sample_id_report = self._sample_id_report(data_inventory)
+        csv_path = _find_gamma_concentrations_csv(gamma_dir)
+        if csv_path is None:
+            print(f"Warning: no '{GAMMA_CSV_PATTERN}' found in {gamma_dir} -- "
+                  "gamma sheet left unchanged.")
+            return None, df_cal
 
-        df_record = df_record.reset_index(drop=True)
-        df_assay = _load_gamma_assays(gamma_dir)
-
-        row_stats = {}     # orig_index -> dict of stats, or None to mark 'missing'
-        cal_results = []
-
-        for idx, row in df_record.iterrows():
-            sample_id = str(row['sample_id'])
-
-            # Case 1: no measurement recorded for this sample at all -- leave
-            # blank. (Only measurement_id1 is checked, matching the original.)
-            if pd.isna(row['measurement_id1']):
-                continue
-
-            meas_ids = [row['measurement_id1'], row['measurement_id2'], row['measurement_id3']]
-            df_temp = df_assay[df_assay['Id'].isin(meas_ids)].replace('<  0.00000', '0')
-
-            if sample_id.startswith('cal'):
-                if len(df_temp) < 3:
-                    print(f"Warning: expected 3 replicate rows for calibration sample "
-                          f"{sample_id}, found {len(df_temp)} -- skipping")
-                    continue
-                cal_results.append({
-                    'sample id': sample_id,
-                    'K_cal': float(df_temp['Component_1 value'].to_list()[0]),
-                    'U_cal': float(df_temp['Component_2 value'].to_list()[1]),
-                    'Th_cal': float(df_temp['Component_3 value'].to_list()[2]),
-                })
-                continue
-
-            # Case 2: measurement_id WAS recorded, but no matching assay data found
-            if df_temp.empty:
-                row_stats[idx] = None
-                continue
-
-            k = df_temp['Component_1 value'].astype('float16')
-            u = df_temp['Component_2 value'].astype('float16')
-            th = df_temp['Component_3 value'].astype('float16')
-            row_stats[idx] = {
-                'K_mean': k.mean(), 'K_median': k.median(), 'K_max': k.max(), 'K_min': k.min(), 'K_std': k.std(),
-                'U_mean': u.mean(), 'U_median': u.median(), 'U_max': u.max(), 'U_min': u.min(), 'U_std': u.std(),
-                'Th_mean': th.mean(), 'Th_median': th.median(), 'Th_max': th.max(), 'Th_min': th.min(), 'Th_std': th.std(),
-            }
-
-        df_proc = pd.DataFrame(index=df_record.index, columns=GAMMA_STAT_COLS, dtype=object)
-        for idx, stats in row_stats.items():
-            if stats is None:
-                df_proc.loc[idx, :] = 'missing'
-            else:
-                df_proc.loc[idx, GAMMA_STAT_COLS] = [stats[c] for c in GAMMA_STAT_COLS]
-
-        df_proc.insert(0, 'sample id', df_record['sample_id'].astype(str).values)
-
-        df_cal = pd.DataFrame(cal_results)
-
-        df_final = df_proc.reset_index(drop=True)
-        df_final = find_missing_list_indices(df_final, 'sample id', sample_id_report)
-
-        return df_final, df_cal
+        df_gamma = _read_gamma_concentrations_csv(csv_path)
+        print(f"Gamma: copied {len(df_gamma)} rows x {len(df_gamma.columns)} columns from {csv_path}")
+        return df_gamma, df_cal
